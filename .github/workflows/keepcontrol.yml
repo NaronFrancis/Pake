@@ -45,7 +45,7 @@ jobs:
         timeout-minutes: 30
         shell: pwsh
         run: |
-          node dist/cli.js "https://app.keepcontrol.com.br/#/" --name "KeepControl" --title "KeepControl Network" --app-version "1.0.0" --icon "keepcontrol-icon.png" --width 1440 --height 900 --min-width 1024 --min-height 700 --enable-find --enable-drag-drop --new-window --show-system-tray
+          node dist/cli.js "https://app.keepcontrol.com.br/#/" --name "KeepControl" --title "KeepControl Network" --app-version "1.0.1" --icon "keepcontrol-icon.png" --inject "fix-download-name.js" --width 1440 --height 900 --min-width 1024 --min-height 700 --enable-find --enable-drag-drop --new-window --show-system-tray
           git checkout -- src-tauri/Cargo.lock
 
       - name: List build output
