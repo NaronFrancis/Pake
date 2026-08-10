@@ -13,9 +13,11 @@
   var MIME_EXT = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel": "xls",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+      "docx",
     "application/msword": "doc",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+      "pptx",
     "application/pdf": "pdf",
     "text/csv": "csv",
     "text/plain": "txt",
@@ -36,7 +38,10 @@
   URL.createObjectURL = function (obj) {
     var url = origCreateObjectURL.apply(URL, arguments);
     try {
-      var type = obj && obj.type ? String(obj.type).split(";")[0].trim().toLowerCase() : "";
+      var type =
+        obj && obj.type
+          ? String(obj.type).split(";")[0].trim().toLowerCase()
+          : "";
       if (type && MIME_EXT[type]) blobExt[url] = MIME_EXT[type];
     } catch (e) {}
     return url;
@@ -62,8 +67,13 @@
       return String(n).padStart(2, "0");
     };
     return (
-      d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
-      p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds())
+      d.getFullYear() +
+      p(d.getMonth() + 1) +
+      p(d.getDate()) +
+      "-" +
+      p(d.getHours()) +
+      p(d.getMinutes()) +
+      p(d.getSeconds())
     );
   }
 
@@ -85,7 +95,10 @@
 
     if (!ext) ext = "xlsx"; // exportacoes do KeepControl sao XLSX
 
-    anchor.setAttribute("download", (name || "KeepControl-" + timestamp()) + "." + ext);
+    anchor.setAttribute(
+      "download",
+      (name || "KeepControl-" + timestamp()) + "." + ext,
+    );
   }
 
   // 1) Clique do usuario. Fase de captura para rodar antes do handler do Pake.
@@ -93,11 +106,12 @@
     "click",
     function (e) {
       try {
-        var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+        var a =
+          e.target && e.target.closest ? e.target.closest("a[href]") : null;
         fixAnchor(a);
       } catch (err) {}
     },
-    true
+    true,
   );
 
   // 2) Clique programatico - FileSaver.js, SheetJS e afins.
