@@ -1,0 +1,73 @@
+name: Build KeepControl
+
+on:
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+
+jobs:
+  build:
+    name: KeepControl (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Node.js Environment
+        uses: ./.github/actions/setup-env
+        with:
+          mode: build
+
+      - name: Build CLI
+        run: pnpm run cli:build
+
+      - name: Rust cache restore
+        uses: actions/cache/restore@v4.2.0
+        id: cache_store
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-pake-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build KeepControl app
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          node dist/cli.js "https://app.keepcontrol.com.br/#/" --name "KeepControl" --title "KeepControl Network" --app-version "1.0.0" --width 1440 --height 900 --min-width 1024 --min-height 700 --enable-find --enable-drag-drop --new-window --show-system-tray
+          git checkout -- src-tauri/Cargo.lock
+
+      - name: List build output
+        shell: pwsh
+        run: Get-ChildItem -Path . -Filter *.msi | Select-Object Name, Length
+
+      - name: Rust cache save
+        if: steps.cache_store.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4.2.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-pake-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v6
+        with:
+          name: KeepControl-Windows
+          path: "*.msi"
+          if-no-files-found: error
+          retention-days: 5
