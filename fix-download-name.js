@@ -1,91 +1,124 @@
 /**
- * Pake fix v2 - KeepControl
+ * Pake fix v3 - KeepControl
  *
- * O site monta o nome do arquivo lendo o cabecalho Content-Disposition da
- * resposta XHR (ver main.min.js: a.download = c(e.headers)). Dentro do Pake
- * esse parser devolve vazio e o WebView2 salva o arquivo como "download",
- * sem extensao.
+ * DIAGNOSTICO (confirmado via DevTools):
+ *   O WebView2 recusa a leitura do cabecalho Content-Disposition
+ *   ("Refused to get unsafe header"). O site faz:
  *
- * Este script:
- *  1. Intercepta XMLHttpRequest e captura o Content-Disposition real,
- *     tratando tambem o formato RFC 5987 (filename*=UTF-8''nome%20com%20acento).
- *  2. Quando um anchor blob:/data: e clicado sem nome valido, aplica o ultimo
- *     nome capturado.
- *  3. Registra diagnostico em window.__pakeDownloadLog para inspecao no DevTools.
+ *       a.download = c(e.headers)   // c() -> e("content-disposition").split(";")
+ *
+ *   Recebendo null, o .split lanca TypeError. A excecao quebra a cadeia de
+ *   promises, o site nunca limpa a flag de requisicao em andamento, o modal
+ *   "Carregando anexo..." fica preso e a tentativa seguinte e recusada com
+ *   {"status":-191,"message":"Request already in progress."}.
+ *   Quando o arquivo chega, a.download esta vazio e vira "download" sem extensao.
+ *
+ * CORRECAO:
+ *   Fabricamos um Content-Disposition sintetico quando o real e inacessivel,
+ *   derivando o nome do proprio caminho da URL e a extensao do Content-Type
+ *   (que E legivel, por estar na lista segura do CORS). Assim o parser do site
+ *   recebe string valida, nao lanca, o modal fecha e o arquivo sai nomeado.
  */
 (function () {
   "use strict";
 
   var LOG = [];
-  var MAX_LOG = 50;
-  var recent = []; // { name, ts }
-  var WINDOW_MS = 30000;
+  window.__pakeDownloadLog = LOG;
 
   function log(evt, data) {
-    var entry = { t: new Date().toISOString(), evt: evt, data: data };
-    LOG.push(entry);
-    if (LOG.length > MAX_LOG) LOG.shift();
+    LOG.push({ t: new Date().toISOString(), evt: evt, data: data });
+    if (LOG.length > 80) LOG.shift();
     try {
       console.log("[pake-download]", evt, data);
     } catch (e) {}
   }
 
-  window.__pakeDownloadLog = LOG;
-
   var MIME_EXT = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel": "xls",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-      "docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
     "application/pdf": "pdf",
-    "text/csv": "csv",
     "application/zip": "zip",
     "application/x-zip-compressed": "zip",
+    "text/csv": "csv",
+    "text/plain": "txt",
+    "application/xml": "xml",
+    "text/xml": "xml",
+    "application/json": "json",
     "image/png": "png",
     "image/jpeg": "jpg",
   };
 
-  var blobExt = Object.create(null);
-
-  /** Extrai o filename de um Content-Disposition, cobrindo filename e filename*. */
-  function parseDisposition(cd) {
-    if (!cd) return "";
-    // RFC 5987 tem prioridade: filename*=UTF-8''nome%20acentuado.xlsx
-    var star = /filename\*\s*=\s*([^']*)''([^;]+)/i.exec(cd);
-    if (star) {
-      try {
-        return decodeURIComponent(star[2].trim().replace(/^"|"$/g, ""));
-      } catch (e) {}
-    }
-    var plain = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(cd);
-    if (plain) {
-      var v = (plain[2] !== undefined ? plain[2] : plain[1]).trim();
-      try {
-        // alguns servidores mandam UTF-8 cru interpretado como latin1
-        if (/[À-ÿ]/.test(v)) v = decodeURIComponent(escape(v));
-      } catch (e) {}
-      return v;
-    }
-    return "";
+  function stamp() {
+    var d = new Date();
+    var p = function (n) {
+      return String(n).padStart(2, "0");
+    };
+    return (
+      d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
+      p(d.getHours()) + p(d.getMinutes())
+    );
   }
 
-  function remember(name, url) {
-    if (!name) return;
-    recent.push({ name: name, ts: Date.now() });
-    if (recent.length > 10) recent.shift();
-    log("filename-capturado", { name: name, url: url });
-  }
-
-  function lastName() {
-    var now = Date.now();
-    for (var i = recent.length - 1; i >= 0; i--) {
-      if (now - recent[i].ts <= WINDOW_MS) return recent[i].name;
+  function contentType(xhr) {
+    try {
+      // content-type e CORS-safelisted, sempre legivel
+      return (xhr.getResponseHeader("content-type") || "").split(";")[0].trim().toLowerCase();
+    } catch (e) {
+      return "";
     }
-    return "";
   }
 
-  // ---- 1) Intercepta XHR para capturar o Content-Disposition real ----------
+  /** A resposta parece um arquivo binario para download? */
+  function isFileResponse(xhr) {
+    try {
+      if (xhr.status !== 200) return false;
+      var rt = xhr.responseType;
+      if (rt !== "arraybuffer" && rt !== "blob") return false;
+      var r = xhr.response;
+      var size = r ? (r.byteLength !== undefined ? r.byteLength : r.size) : 0;
+      return size > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Segmentos genericos que nao servem como nome de arquivo
+  var SKIP = /^(api|v\d+|list|download|downloadhash|downloadbatchhash|hash|attachment|attachments|file|files|export|view|print|get)$/i;
+
+  function deriveName(url, ctype) {
+    var path = String(url || "").split("?")[0].split("#")[0];
+    var segs = path.split("/").filter(Boolean);
+
+    var pick = "";
+    for (var i = segs.length - 1; i >= 0; i--) {
+      if (!SKIP.test(segs[i])) {
+        pick = segs[i];
+        break;
+      }
+    }
+    if (!pick) pick = "KeepControl";
+
+    pick = pick.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+
+    var ext = MIME_EXT[ctype] || "";
+    if (!ext) ext = ctype === "application/octet-stream" ? "bin" : "bin";
+
+    if (new RegExp("\\." + ext + "$", "i").test(pick)) return pick;
+    return pick + "-" + stamp() + "." + ext;
+  }
+
+  function synthName(xhr) {
+    if (!xhr.__pakeSynthName) {
+      xhr.__pakeSynthName = deriveName(xhr.__pakeUrl, contentType(xhr));
+      log("nome-sintetizado", { url: xhr.__pakeUrl, nome: xhr.__pakeSynthName });
+    }
+    return xhr.__pakeSynthName;
+  }
+
+  // ---- registra a URL de cada XHR -----------------------------------------
   var origOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url) {
     try {
@@ -94,77 +127,49 @@
     return origOpen.apply(this, arguments);
   };
 
-  var origSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function () {
-    var xhr = this;
+  // ---- getAllResponseHeaders: usado pelo $http do AngularJS ---------------
+  var origGetAll = XMLHttpRequest.prototype.getAllResponseHeaders;
+  XMLHttpRequest.prototype.getAllResponseHeaders = function () {
+    var raw = "";
     try {
-      xhr.addEventListener("load", function () {
-        try {
-          var cd = xhr.getResponseHeader("content-disposition");
-          if (cd) {
-            remember(parseDisposition(cd), xhr.__pakeUrl);
-          } else if (/download|attachment|export/i.test(xhr.__pakeUrl || "")) {
-            // diagnostico: rota de download que NAO expos o cabecalho
-            log("sem-content-disposition", {
-              url: xhr.__pakeUrl,
-              headers: xhr.getAllResponseHeaders(),
-            });
-          }
-        } catch (e) {
-          log("erro-lendo-headers", String(e));
+      raw = origGetAll.apply(this, arguments) || "";
+    } catch (e) {}
+
+    try {
+      if (!/^content-disposition\s*:/im.test(raw) && isFileResponse(this)) {
+        if (raw && !/\r\n$/.test(raw)) raw += "\r\n";
+        raw += 'content-disposition: attachment; filename="' + synthName(this) + '"\r\n';
+      }
+    } catch (e) {}
+
+    return raw;
+  };
+
+  // ---- getResponseHeader: evita o "Refused to get unsafe header" ----------
+  var origGetHeader = XMLHttpRequest.prototype.getResponseHeader;
+  XMLHttpRequest.prototype.getResponseHeader = function (name) {
+    var lower = String(name || "").toLowerCase();
+
+    if (lower === "content-disposition") {
+      var real = null;
+      try {
+        real = origGetHeader.apply(this, arguments);
+      } catch (e) {}
+      if (real) return real;
+      try {
+        if (isFileResponse(this)) {
+          return 'attachment; filename="' + synthName(this) + '"';
         }
-      });
-      xhr.addEventListener("error", function () {
-        log("xhr-erro", { url: xhr.__pakeUrl });
-      });
-      xhr.addEventListener("timeout", function () {
-        log("xhr-timeout", { url: xhr.__pakeUrl });
-      });
-    } catch (e) {}
-    return origSend.apply(this, arguments);
+      } catch (e) {}
+      return null;
+    }
+
+    return origGetHeader.apply(this, arguments);
   };
 
-  // ---- 2) Guarda a extensao pelo MIME do Blob ------------------------------
-  var origCreate = URL.createObjectURL;
-  URL.createObjectURL = function (obj) {
-    var url = origCreate.apply(URL, arguments);
-    try {
-      var type =
-        obj && obj.type
-          ? String(obj.type).split(";")[0].trim().toLowerCase()
-          : "";
-      if (type && MIME_EXT[type]) blobExt[url] = MIME_EXT[type];
-    } catch (e) {}
-    return url;
-  };
-
-  var origRevoke = URL.revokeObjectURL;
-  URL.revokeObjectURL = function (url) {
-    setTimeout(function () {
-      delete blobExt[url];
-    }, 60000);
-    return origRevoke.apply(URL, arguments);
-  };
-
-  // ---- 3) Corrige o anchor antes do clique nativo --------------------------
-  function hasExtension(n) {
+  // ---- rede de seguranca no anchor ----------------------------------------
+  function hasExt(n) {
     return /\.[A-Za-z0-9]{2,5}$/.test(n || "");
-  }
-
-  function stamp() {
-    var d = new Date();
-    var p = function (n) {
-      return String(n).padStart(2, "0");
-    };
-    return (
-      d.getFullYear() +
-      p(d.getMonth() + 1) +
-      p(d.getDate()) +
-      "-" +
-      p(d.getHours()) +
-      p(d.getMinutes()) +
-      p(d.getSeconds())
-    );
   }
 
   function fixAnchor(a) {
@@ -172,42 +177,23 @@
     var href = a.getAttribute("href") || a.href || "";
     if (!/^(blob:|data:)/i.test(href)) return;
 
-    var current = a.getAttribute("download") || "";
-    if (
-      current &&
-      current !== "undefined" &&
-      current !== "null" &&
-      hasExtension(current)
-    ) {
-      log("nome-ok", current);
-      return;
-    }
+    var cur = a.getAttribute("download") || "";
+    if (cur && cur !== "undefined" && cur !== "null" && hasExt(cur)) return;
 
-    var name = lastName();
-    if (!name || !hasExtension(name)) {
-      var ext = blobExt[href] || "";
-      if (!ext && /^data:/i.test(href)) {
-        var m = /^data:([^;,]+)/i.exec(href);
-        if (m) ext = MIME_EXT[m[1].toLowerCase()] || "";
-      }
-      if (!ext) ext = "bin";
-      name = (name || "KeepControl-" + stamp()) + "." + ext;
-    }
-
+    var name = "KeepControl-" + stamp() + ".bin";
     a.setAttribute("download", name);
-    log("nome-corrigido", { de: current || "(vazio)", para: name });
+    log("anchor-corrigido", { de: cur || "(vazio)", para: name });
   }
 
   document.addEventListener(
     "click",
     function (e) {
       try {
-        var a =
-          e.target && e.target.closest ? e.target.closest("a[href]") : null;
+        var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
         fixAnchor(a);
       } catch (err) {}
     },
-    true,
+    true
   );
 
   var origClick = HTMLAnchorElement.prototype.click;
@@ -218,13 +204,5 @@
     return origClick.apply(this, arguments);
   };
 
-  var origDispatch = HTMLAnchorElement.prototype.dispatchEvent;
-  HTMLAnchorElement.prototype.dispatchEvent = function (evt) {
-    try {
-      if (evt && evt.type === "click") fixAnchor(this);
-    } catch (e) {}
-    return origDispatch.apply(this, arguments);
-  };
-
-  log("inject-ativo", "fix-download-name v2");
+  log("inject-ativo", "fix-download-name v3");
 })();
