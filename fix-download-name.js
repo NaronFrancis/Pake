@@ -36,9 +36,11 @@
   var MIME_EXT = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
     "application/vnd.ms-excel": "xls",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+      "docx",
     "application/msword": "doc",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+      "pptx",
     "application/pdf": "pdf",
     "application/zip": "zip",
     "application/x-zip-compressed": "zip",
@@ -57,15 +59,22 @@
       return String(n).padStart(2, "0");
     };
     return (
-      d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" +
-      p(d.getHours()) + p(d.getMinutes())
+      d.getFullYear() +
+      p(d.getMonth() + 1) +
+      p(d.getDate()) +
+      "-" +
+      p(d.getHours()) +
+      p(d.getMinutes())
     );
   }
 
   function contentType(xhr) {
     try {
       // content-type e CORS-safelisted, sempre legivel
-      return (xhr.getResponseHeader("content-type") || "").split(";")[0].trim().toLowerCase();
+      return (xhr.getResponseHeader("content-type") || "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
     } catch (e) {
       return "";
     }
@@ -86,10 +95,13 @@
   }
 
   // Segmentos genericos que nao servem como nome de arquivo
-  var SKIP = /^(api|v\d+|list|download|downloadhash|downloadbatchhash|hash|attachment|attachments|file|files|export|view|print|get)$/i;
+  var SKIP =
+    /^(api|v\d+|list|download|downloadhash|downloadbatchhash|hash|attachment|attachments|file|files|export|view|print|get)$/i;
 
   function deriveName(url, ctype) {
-    var path = String(url || "").split("?")[0].split("#")[0];
+    var path = String(url || "")
+      .split("?")[0]
+      .split("#")[0];
     var segs = path.split("/").filter(Boolean);
 
     var pick = "";
@@ -113,7 +125,10 @@
   function synthName(xhr) {
     if (!xhr.__pakeSynthName) {
       xhr.__pakeSynthName = deriveName(xhr.__pakeUrl, contentType(xhr));
-      log("nome-sintetizado", { url: xhr.__pakeUrl, nome: xhr.__pakeSynthName });
+      log("nome-sintetizado", {
+        url: xhr.__pakeUrl,
+        nome: xhr.__pakeSynthName,
+      });
     }
     return xhr.__pakeSynthName;
   }
@@ -138,7 +153,10 @@
     try {
       if (!/^content-disposition\s*:/im.test(raw) && isFileResponse(this)) {
         if (raw && !/\r\n$/.test(raw)) raw += "\r\n";
-        raw += 'content-disposition: attachment; filename="' + synthName(this) + '"\r\n';
+        raw +=
+          'content-disposition: attachment; filename="' +
+          synthName(this) +
+          '"\r\n';
       }
     } catch (e) {}
 
@@ -189,11 +207,12 @@
     "click",
     function (e) {
       try {
-        var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+        var a =
+          e.target && e.target.closest ? e.target.closest("a[href]") : null;
         fixAnchor(a);
       } catch (err) {}
     },
-    true
+    true,
   );
 
   var origClick = HTMLAnchorElement.prototype.click;
